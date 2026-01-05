@@ -2,28 +2,13 @@
 set -e
 
 # ======================================
-# COLORS (professional, no icons)
+# COLORS
 # ======================================
 BLUE='\033[0;34m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
-
-# ======================================
-# SIMPLE SPINNER
-# ======================================
-spinner() {
-  local pid=$!
-  local spin='-\|/'
-  local i=0
-  while kill -0 $pid 2>/dev/null; do
-    i=$(( (i+1) %4 ))
-    printf "\r${YELLOW}[%c] Processing...${NC}" "${spin:$i:1}"
-    sleep 0.1
-  done
-  printf "\r${GREEN}[OK] Completed            ${NC}\n"
-}
 
 # ======================================
 # ERROR HANDLER
@@ -34,7 +19,7 @@ fail() {
 }
 
 # ======================================
-# SAFE EXTRACT FUNCTION
+# SAFE EXTRACT
 # ======================================
 extract() {
   local file=$1
@@ -44,15 +29,15 @@ extract() {
     fail "File not found: $file"
   fi
 
-  if file "$file" | grep -q "gzip compressed"; then
-    tar -xzf "$file" -C "$dest"
-  else
-    fail "Invalid or corrupted archive: $file"
+  if ! file "$file" | grep -q "gzip compressed"; then
+    fail "Invalid archive: $file"
   fi
+
+  tar -xzf "$file" -C "$dest"
 }
 
 # ======================================
-# CLEAR SCREEN + TITLE
+# TITLE
 # ======================================
 clear
 echo -e "${BLUE}"
@@ -62,66 +47,71 @@ echo "        Offline Kafka 4.x Installer"
 echo "===================================================="
 echo -e "${NC}"
 
-sleep 1
-
 # ======================================
 # 1. INSTALL JAVA
 # ======================================
 echo -e "${BLUE}[1/6] Installing Java 17${NC}"
-(
-  mkdir -p /opt/java
-  extract artifacts/OpenJDK17U-jdk_x64_linux_hotspot_17.0.10_7.tar.gz /opt
-  mv /opt/jdk-17* /opt/java
-) & spinner
+mkdir -p /opt/java
+extract artifacts/OpenJDK17U-jdk_x64_linux_hotspot_17.0.10_7.tar.gz /opt
+mv /opt/jdk-17* /opt/java
+
+# 👉 IMPORTANT: export Java NOW
+export JAVA_HOME=/opt/java
+export PATH=$JAVA_HOME/bin:$PATH
+
+# Verify Java immediately
+java -version || fail "Java not working after installation"
+
+echo -e "${GREEN}[OK] Java installed and verified${NC}"
 
 # ======================================
 # 2. INSTALL KAFKA
 # ======================================
 echo -e "${BLUE}[2/6] Installing Kafka 4.0.0${NC}"
-(
-  mkdir -p /opt/kafka
-  extract artifacts/kafka_2.13-4.0.0.tgz /opt
-  mv /opt/kafka_*/* /opt/kafka
-) & spinner
+mkdir -p /opt/kafka
+extract artifacts/kafka_2.13-4.0.0.tgz /opt
+mv /opt/kafka_*/* /opt/kafka
+echo -e "${GREEN}[OK] Kafka extracted${NC}"
 
 # ======================================
-# 3. CREATE DATA DIRECTORY
+# 3. DATA DIRECTORY
 # ======================================
 echo -e "${BLUE}[3/6] Creating Kafka data directory${NC}"
-(
-  mkdir -p /opt/kafka/data
-) & spinner
+mkdir -p /opt/kafka/data
+echo -e "${GREEN}[OK] Data directory ready${NC}"
 
 # ======================================
-# 4. APPLY CONFIGURATION
+# 4. CONFIG
 # ======================================
 echo -e "${BLUE}[4/6] Applying Kafka configuration${NC}"
-(
-  mkdir -p /opt/kafka/config/kraft
-  cp configs/server.properties /opt/kafka/config/kraft/server.properties
-) & spinner
+mkdir -p /opt/kafka/config/kraft
+cp configs/server.properties /opt/kafka/config/kraft/server.properties
+echo -e "${GREEN}[OK] Configuration applied${NC}"
 
 # ======================================
-# 5. SET ENVIRONMENT VARIABLES
+# 5. ENV FOR FUTURE SESSIONS
 # ======================================
 echo -e "${BLUE}[5/6] Setting environment variables${NC}"
-(
-  cp env/kafka.env /etc/profile.d/kafka.sh
-  source /etc/profile.d/kafka.sh
-) & spinner
+cat <<EOF >/etc/profile.d/kafka.sh
+export JAVA_HOME=/opt/java
+export KAFKA_HOME=/opt/kafka
+export PATH=\$JAVA_HOME/bin:\$KAFKA_HOME/bin:\$PATH
+EOF
+chmod 644 /etc/profile.d/kafka.sh
+echo -e "${GREEN}[OK] Environment variables saved${NC}"
 
 # ======================================
-# 6. FORMAT KRAFT METADATA
+# 6. FORMAT KRAFT (USES JAVA)
 # ======================================
 echo -e "${BLUE}[6/6] Formatting KRaft metadata${NC}"
-(
-  /opt/kafka/bin/kafka-storage.sh format \
-    -t $(/opt/kafka/bin/kafka-storage.sh random-uuid) \
-    -c /opt/kafka/config/kraft/server.properties
-) & spinner
+/opt/kafka/bin/kafka-storage.sh format \
+  -t $(/opt/kafka/bin/kafka-storage.sh random-uuid) \
+  -c /opt/kafka/config/kraft/server.properties
+
+echo -e "${GREEN}[OK] KRaft metadata formatted${NC}"
 
 # ======================================
-# FINAL MESSAGE
+# DONE
 # ======================================
 echo -e "\n${GREEN}====================================================${NC}"
 echo -e "${GREEN}Kafka 4.x Offline Installation Completed Successfully${NC}"
