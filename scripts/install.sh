@@ -19,7 +19,7 @@ fail() {
 }
 
 # ======================================
-# SAFE EXTRACT
+# SAFE EXTRACT FUNCTION
 # ======================================
 extract() {
   local file=$1
@@ -30,7 +30,7 @@ extract() {
   fi
 
   if ! file "$file" | grep -q "gzip compressed"; then
-    fail "Invalid archive: $file"
+    fail "Invalid or corrupted archive: $file"
   fi
 
   tar -xzf "$file" -C "$dest"
@@ -48,52 +48,59 @@ echo "===================================================="
 echo -e "${NC}"
 
 # ======================================
-# 1. INSTALL JAVA
+# 1. INSTALL JAVA 17
 # ======================================
-echo -e "${BLUE}[1/6] Installing Java 17${NC}"
+echo -e "${BLUE}[1/7] Installing Java 17${NC}"
+
 mkdir -p /opt/java
-extract artifacts/OpenJDK17U-jdk_x64_linux_hotspot_17.0.10_7.tar.gz /opt
-mv /opt/jdk-17* /opt/java
+extract artifacts/OpenJDK17U-jdk_x64_linux_hotspot_17.0.10_7.tar.gz /opt/java
 
-# 👉 IMPORTANT: export Java NOW
-export JAVA_HOME=/opt/java
-export PATH=$JAVA_HOME/bin:$PATH
+JDK_DIR=$(find /opt/java -maxdepth 1 -type d -name "jdk-17*" | head -n 1)
+[[ -z "$JDK_DIR" ]] && fail "JDK directory not found"
 
-# Verify Java immediately
-java -version || fail "Java not working after installation"
+export JAVA_HOME="$JDK_DIR"
+export PATH="$JAVA_HOME/bin:$PATH"
 
-echo -e "${GREEN}[OK] Java installed and verified${NC}"
+"$JAVA_HOME/bin/java" -version || fail "Java verification failed"
+echo -e "${GREEN}[OK] Java installed at $JAVA_HOME${NC}"
 
 # ======================================
-# 2. INSTALL KAFKA
+# 2. INSTALL KAFKA 4.0.0
 # ======================================
-echo -e "${BLUE}[2/6] Installing Kafka 4.0.0${NC}"
+echo -e "${BLUE}[2/7] Installing Kafka 4.0.0${NC}"
+
 mkdir -p /opt/kafka
 extract artifacts/kafka_2.13-4.0.0.tgz /opt
-mv /opt/kafka_*/* /opt/kafka
-echo -e "${GREEN}[OK] Kafka extracted${NC}"
+
+KAFKA_SRC=$(find /opt -maxdepth 1 -type d -name "kafka_*" | head -n 1)
+[[ -z "$KAFKA_SRC" ]] && fail "Kafka directory not found"
+
+mv "$KAFKA_SRC"/* /opt/kafka
+rmdir "$KAFKA_SRC"
+
+echo -e "${GREEN}[OK] Kafka installed at /opt/kafka${NC}"
 
 # ======================================
 # 3. DATA DIRECTORY
 # ======================================
-echo -e "${BLUE}[3/6] Creating Kafka data directory${NC}"
+echo -e "${BLUE}[3/7] Creating Kafka data directory${NC}"
 mkdir -p /opt/kafka/data
 echo -e "${GREEN}[OK] Data directory ready${NC}"
 
 # ======================================
-# 4. CONFIG
+# 4. APPLY CONFIGURATION
 # ======================================
-echo -e "${BLUE}[4/6] Applying Kafka configuration${NC}"
+echo -e "${BLUE}[4/7] Applying Kafka configuration${NC}"
 mkdir -p /opt/kafka/config/kraft
 cp configs/server.properties /opt/kafka/config/kraft/server.properties
 echo -e "${GREEN}[OK] Configuration applied${NC}"
 
 # ======================================
-# 5. ENV FOR FUTURE SESSIONS
+# 5. SAVE ENVIRONMENT VARIABLES
 # ======================================
-echo -e "${BLUE}[5/6] Setting environment variables${NC}"
+echo -e "${BLUE}[5/7] Saving environment variables${NC}"
 cat <<EOF >/etc/profile.d/kafka.sh
-export JAVA_HOME=/opt/java
+export JAVA_HOME=$JAVA_HOME
 export KAFKA_HOME=/opt/kafka
 export PATH=\$JAVA_HOME/bin:\$KAFKA_HOME/bin:\$PATH
 EOF
@@ -101,14 +108,49 @@ chmod 644 /etc/profile.d/kafka.sh
 echo -e "${GREEN}[OK] Environment variables saved${NC}"
 
 # ======================================
-# 6. FORMAT KRAFT (USES JAVA)
+# 6. FORMAT KRAFT METADATA
 # ======================================
-echo -e "${BLUE}[6/6] Formatting KRaft metadata${NC}"
+echo -e "${BLUE}[6/7] Formatting KRaft metadata${NC}"
 /opt/kafka/bin/kafka-storage.sh format \
-  -t $(/opt/kafka/bin/kafka-storage.sh random-uuid) \
+  -t "$(/opt/kafka/bin/kafka-storage.sh random-uuid)" \
   -c /opt/kafka/config/kraft/server.properties
-
 echo -e "${GREEN}[OK] KRaft metadata formatted${NC}"
+
+# ======================================
+# 7. SETUP SYSTEMD AUTO-START
+# ======================================
+echo -e "${BLUE}[7/7] Setting up Kafka auto-start (systemd)${NC}"
+
+cat <<EOF >/etc/systemd/system/kafka.service
+[Unit]
+Description=Apache Kafka 4.x (KRaft Mode)
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+Environment="JAVA_HOME=$JAVA_HOME"
+Environment="KAFKA_HOME=/opt/kafka"
+Environment="PATH=$JAVA_HOME/bin:/opt/kafka/bin:/usr/bin:/bin"
+ExecStart=/opt/kafka/bin/kafka-server-start.sh /opt/kafka/config/kraft/server.properties
+ExecStop=/opt/kafka/bin/kafka-server-stop.sh
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reexec
+systemctl daemon-reload
+systemctl enable kafka
+systemctl start kafka
+
+echo -e "${GREEN}[OK] Kafka service enabled and started${NC}"
 
 # ======================================
 # DONE
@@ -117,11 +159,10 @@ echo -e "\n${GREEN}====================================================${NC}"
 echo -e "${GREEN}Kafka 4.x Offline Installation Completed Successfully${NC}"
 echo -e "${GREEN}====================================================${NC}"
 
-echo -e "${YELLOW}Kafka Location : /opt/kafka${NC}"
-echo -e "${YELLOW}Java Location  : /opt/java${NC}"
-echo -e "${YELLOW}Data Directory : /opt/kafka/data${NC}"
-
+echo -e "${YELLOW}Kafka Home : /opt/kafka${NC}"
+echo -e "${YELLOW}Java Home  : $JAVA_HOME${NC}"
+echo -e "${YELLOW}Data Dir   : /opt/kafka/data${NC}"
 echo ""
-echo -e "${BLUE}Start Kafka using:${NC}"
-echo "/opt/kafka/bin/kafka-server-start.sh /opt/kafka/config/kraft/server.properties"
+echo -e "${BLUE}Kafka Status:${NC}"
+systemctl status kafka --no-pager
 echo ""
