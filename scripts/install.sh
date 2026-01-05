@@ -25,13 +25,8 @@ extract() {
   local file=$1
   local dest=$2
 
-  if [[ ! -f "$file" ]]; then
-    fail "File not found: $file"
-  fi
-
-  if ! file "$file" | grep -q "gzip compressed"; then
-    fail "Invalid or corrupted archive: $file"
-  fi
+  [[ ! -f "$file" ]] && fail "File not found: $file"
+  file "$file" | grep -q "gzip compressed" || fail "Invalid archive: $file"
 
   tar -xzf "$file" -C "$dest"
 }
@@ -50,7 +45,7 @@ echo -e "${NC}"
 # ======================================
 # 1. INSTALL JAVA 17
 # ======================================
-echo -e "${BLUE}[1/7] Installing Java 17${NC}"
+echo -e "${BLUE}[1/8] Installing Java 17${NC}"
 
 mkdir -p /opt/java
 extract artifacts/OpenJDK17U-jdk_x64_linux_hotspot_17.0.10_7.tar.gz /opt/java
@@ -62,12 +57,29 @@ export JAVA_HOME="$JDK_DIR"
 export PATH="$JAVA_HOME/bin:$PATH"
 
 "$JAVA_HOME/bin/java" -version || fail "Java verification failed"
+
 echo -e "${GREEN}[OK] Java installed at $JAVA_HOME${NC}"
 
 # ======================================
-# 2. INSTALL KAFKA 4.0.0
+# 2. CREATE SYSTEM-WIDE JAVA SYMLINK
 # ======================================
-echo -e "${BLUE}[2/7] Installing Kafka 4.0.0${NC}"
+echo -e "${BLUE}[2/8] Registering system-wide java binary${NC}"
+
+if [[ -L /usr/bin/java || -f /usr/bin/java ]]; then
+  rm -f /usr/bin/java
+fi
+
+ln -s "$JAVA_HOME/bin/java" /usr/bin/java
+
+which java >/dev/null || fail "java not found in PATH"
+java -version || fail "Global java verification failed"
+
+echo -e "${GREEN}[OK] java available at /usr/bin/java${NC}"
+
+# ======================================
+# 3. INSTALL KAFKA 4.0.0
+# ======================================
+echo -e "${BLUE}[3/8] Installing Kafka 4.0.0${NC}"
 
 mkdir -p /opt/kafka
 extract artifacts/kafka_2.13-4.0.0.tgz /opt
@@ -81,59 +93,68 @@ rmdir "$KAFKA_SRC"
 echo -e "${GREEN}[OK] Kafka installed at /opt/kafka${NC}"
 
 # ======================================
-# 3. DATA DIRECTORY
+# 4. DATA DIRECTORY
 # ======================================
-echo -e "${BLUE}[3/7] Creating Kafka data directory${NC}"
+echo -e "${BLUE}[4/8] Creating Kafka data directory${NC}"
 mkdir -p /opt/kafka/data
 echo -e "${GREEN}[OK] Data directory ready${NC}"
 
 # ======================================
-# 4. APPLY CONFIGURATION
+# 5. APPLY CONFIGURATION
 # ======================================
-echo -e "${BLUE}[4/7] Applying Kafka configuration${NC}"
+echo -e "${BLUE}[5/8] Applying Kafka configuration${NC}"
 mkdir -p /opt/kafka/config/kraft
 cp configs/server.properties /opt/kafka/config/kraft/server.properties
 echo -e "${GREEN}[OK] Configuration applied${NC}"
 
 # ======================================
-# 5. SAVE ENVIRONMENT VARIABLES
+# 6. SAVE ENVIRONMENT VARIABLES
 # ======================================
-echo -e "${BLUE}[5/7] Saving environment variables${NC}"
+echo -e "${BLUE}[6/8] Saving environment variables${NC}"
+
 cat <<EOF >/etc/profile.d/kafka.sh
 export JAVA_HOME=$JAVA_HOME
 export KAFKA_HOME=/opt/kafka
 export PATH=\$JAVA_HOME/bin:\$KAFKA_HOME/bin:\$PATH
 EOF
+
 chmod 644 /etc/profile.d/kafka.sh
-echo -e "${GREEN}[OK] Environment variables saved${NC}"
+
+# Load immediately for this script
+source /etc/profile.d/kafka.sh
+
+echo -e "${GREEN}[OK] Environment variables saved and loaded${NC}"
 
 # ======================================
-# 6. FORMAT KRAFT METADATA
+# 7. FORMAT KRAFT METADATA
 # ======================================
-echo -e "${BLUE}[6/7] Formatting KRaft metadata${NC}"
-/opt/kafka/bin/kafka-storage.sh format \
-  -t "$(/opt/kafka/bin/kafka-storage.sh random-uuid)" \
-  -c /opt/kafka/config/kraft/server.properties
+echo -e "${BLUE}[7/8] Formatting KRaft metadata${NC}"
+
+UUID=$(/opt/kafka/bin/kafka-storage.sh random-uuid)
+
+ /opt/kafka/bin/kafka-storage.sh format \
+   -t "$UUID" \
+   -c /opt/kafka/config/kraft/server.properties
+
 echo -e "${GREEN}[OK] KRaft metadata formatted${NC}"
 
 # ======================================
-# 7. SETUP SYSTEMD AUTO-START
+# 8. SYSTEMD SERVICE
 # ======================================
-echo -e "${BLUE}[7/7] Setting up Kafka auto-start (systemd)${NC}"
+echo -e "${BLUE}[8/8] Setting up Kafka auto-start (systemd)${NC}"
 
 cat <<EOF >/etc/systemd/system/kafka.service
 [Unit]
 Description=Apache Kafka 4.x (KRaft Mode)
 After=network.target
-Wants=network.target
 
 [Service]
 Type=simple
 User=root
 Group=root
-Environment="JAVA_HOME=$JAVA_HOME"
-Environment="KAFKA_HOME=/opt/kafka"
-Environment="PATH=$JAVA_HOME/bin:/opt/kafka/bin:/usr/bin:/bin"
+Environment=JAVA_HOME=$JAVA_HOME
+Environment=KAFKA_HOME=/opt/kafka
+Environment=PATH=$JAVA_HOME/bin:/opt/kafka/bin:/usr/bin:/bin
 ExecStart=/opt/kafka/bin/kafka-server-start.sh /opt/kafka/config/kraft/server.properties
 ExecStop=/opt/kafka/bin/kafka-server-stop.sh
 Restart=on-failure
